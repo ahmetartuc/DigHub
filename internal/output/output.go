@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ahmetartuc/dighub/internal/config"
-	"github.com/ahmetartuc/dighub/internal/scanner"
+	"github.com/ahmetartuc/dighub/v2/internal/config"
+	"github.com/ahmetartuc/dighub/v2/internal/scanner"
 	"github.com/fatih/color"
 )
 

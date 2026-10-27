@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ahmetartuc/dighub/internal/config"
-	"github.com/ahmetartuc/dighub/internal/dorks"
-	"github.com/ahmetartuc/dighub/internal/logger"
-	"github.com/ahmetartuc/dighub/internal/provider"
+	"github.com/ahmetartuc/dighub/v2/internal/config"
+	"github.com/ahmetartuc/dighub/v2/internal/dorks"
+	"github.com/ahmetartuc/dighub/v2/internal/logger"
+	"github.com/ahmetartuc/dighub/v2/internal/provider"
 	"github.com/schollz/progressbar/v3"
 )
 

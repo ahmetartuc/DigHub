@@ -244,7 +244,7 @@ jobs:
     steps:
       - name: Install Dighub
         run: |
-          go install github.com/ahmetartuc/dighub@latest
+          go install github.com/ahmetartuc/dighub/v2@latest
           
       - name: Run Security Scan
         env:
