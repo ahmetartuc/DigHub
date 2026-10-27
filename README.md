@@ -12,7 +12,7 @@ DigHub is a CLI tool that scans an organization's or user's repositories on **Gi
 ## Install
 
 ```bash
-go install github.com/ahmetartuc/dighub@latest
+go install github.com/ahmetartuc/dighub/v2@latest
 ```
 
 Or build from source:

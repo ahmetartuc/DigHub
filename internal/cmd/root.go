@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ahmetartuc/dighub/internal/config"
-	"github.com/ahmetartuc/dighub/internal/logger"
-	"github.com/ahmetartuc/dighub/internal/output"
-	"github.com/ahmetartuc/dighub/internal/scanner"
+	"github.com/ahmetartuc/dighub/v2/internal/config"
+	"github.com/ahmetartuc/dighub/v2/internal/logger"
+	"github.com/ahmetartuc/dighub/v2/internal/output"
+	"github.com/ahmetartuc/dighub/v2/internal/scanner"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )

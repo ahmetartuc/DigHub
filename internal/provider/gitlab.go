@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ahmetartuc/dighub/internal/logger"
+	"github.com/ahmetartuc/dighub/v2/internal/logger"
 )
 
 const (

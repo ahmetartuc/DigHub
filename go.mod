@@ -1,4 +1,4 @@
-module github.com/ahmetartuc/dighub
+module github.com/ahmetartuc/dighub/v2
 
 go 1.21
 

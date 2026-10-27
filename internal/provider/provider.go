@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ahmetartuc/dighub/internal/logger"
+	"github.com/ahmetartuc/dighub/v2/internal/logger"
 )
 
 // Hit is a single file matched by a search

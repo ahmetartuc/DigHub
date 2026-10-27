@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ahmetartuc/dighub/internal/cmd"
+	"github.com/ahmetartuc/dighub/v2/internal/cmd"
 )
 
-var version = "2.0.1"
+// version is overridden at release build time with -ldflags "-X main.version=..."
+var version = "2.1.0"
 
 func main() {
 	os.Args = normalizeArgs(os.Args)
