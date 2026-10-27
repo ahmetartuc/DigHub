@@ -2,26 +2,23 @@ package scanner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
 	"github.com/ahmetartuc/dighub/internal/config"
 	"github.com/ahmetartuc/dighub/internal/dorks"
 	"github.com/ahmetartuc/dighub/internal/logger"
+	"github.com/ahmetartuc/dighub/internal/provider"
 	"github.com/schollz/progressbar/v3"
 )
 
-// Scanner handles the GitHub code search operations
+// Scanner handles the code search operations
 type Scanner struct {
-	config *config.Config
-	logger *logger.Logger
-	client *http.Client
-	bar    *progressbar.ProgressBar
+	config   *config.Config
+	logger   *logger.Logger
+	provider provider.Provider
+	bar      *progressbar.ProgressBar
 }
 
 // Match represents a single search result
@@ -31,47 +28,59 @@ type Match struct {
 	Repository string
 	Path       string
 	Score      float64
+	Fragments  []string
 	Timestamp  time.Time
+}
+
+// SkippedDork is a dork whose search failed, so its results are unknown
+type SkippedDork struct {
+	Pattern string
+	Reason  string
 }
 
 // ScanResults holds the aggregated scan results
 type ScanResults struct {
 	Matches        []Match
+	Skipped        []SkippedDork
 	TotalDorks     int
 	TotalMatches   int
 	UniqueFiles    int
 	HighPriority   int
 	MediumPriority int
 	LowPriority    int
-	Duration       string
-	OutputFile     string
-	Target         string
-	ScanDate       time.Time
-}
-
-// GitHubSearchResponse represents the GitHub API response
-type GitHubSearchResponse struct {
-	TotalCount int `json:"total_count"`
-	Items      []struct {
-		Name       string `json:"name"`
-		Path       string `json:"path"`
-		HTMLURL    string `json:"html_url"`
-		Repository struct {
-			FullName string `json:"full_name"`
-		} `json:"repository"`
-		Score float64 `json:"score"`
-	} `json:"items"`
+	// Truncated counts dorks that had more results than were fetched
+	Truncated  int
+	Duration   string
+	OutputFile string
+	Target     string
+	Platform   string
+	ScanDate   time.Time
 }
 
 // New creates a new scanner instance
 func New(cfg *config.Config, log *logger.Logger) (*Scanner, error) {
+	p, err := provider.New(cfg.Platform, provider.Options{
+		BaseURL:    cfg.BaseURL,
+		Token:      cfg.Token,
+		Target:     cfg.GetTarget(),
+		TargetType: cfg.GetTargetType(),
+		MaxPages:   cfg.MaxPages,
+		RateLimit:  cfg.RateLimit,
+		Logger:     log,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return NewWithProvider(cfg, log, p), nil
+}
+
+// NewWithProvider creates a scanner that searches through the given provider
+func NewWithProvider(cfg *config.Config, log *logger.Logger, p provider.Provider) *Scanner {
 	return &Scanner{
-		config: cfg,
-		logger: log,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}, nil
+		config:   cfg,
+		logger:   log,
+		provider: p,
+	}
 }
 
 // Scan performs the complete scanning operation
@@ -105,10 +114,12 @@ func (s *Scanner) Scan() (*ScanResults, error) {
 	}
 
 	// Scan with concurrency
-	matches := s.scanConcurrent(filteredDorks)
+	matches, skipped, truncated := s.scanConcurrent(filteredDorks)
 
 	// Calculate statistics
 	results := s.buildResults(matches, filteredDorks, startTime)
+	results.Skipped = skipped
+	results.Truncated = truncated
 
 	return results, nil
 }
@@ -129,51 +140,53 @@ func (s *Scanner) filterDorks(allDorks []dorks.Dork) []dorks.Dork {
 	return filtered
 }
 
-// scanConcurrent performs concurrent scanning with worker pool
-func (s *Scanner) scanConcurrent(dorkList []dorks.Dork) []Match {
+// scanConcurrent performs concurrent scanning with worker pool.
+// Request pacing is handled by the provider, shared across all workers.
+func (s *Scanner) scanConcurrent(dorkList []dorks.Dork) ([]Match, []SkippedDork, int) {
 	var (
-		matches []Match
-		mu      sync.Mutex
-		wg      sync.WaitGroup
+		matches   []Match
+		skipped   []SkippedDork
+		truncated int
+		mu        sync.Mutex
+		wg        sync.WaitGroup
 	)
 
-	// Create worker pool
+	ctx := context.Background()
 	jobs := make(chan dorks.Dork, len(dorkList))
 
-	// Start workers
 	for i := 0; i < s.config.Workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for dork := range jobs {
-				// Perform search
-				dorkMatches := s.searchDork(dork)
+				dorkMatches, wasTruncated, err := s.searchDork(ctx, dork)
 
-				// Add matches
-				if len(dorkMatches) > 0 {
-					mu.Lock()
-					matches = append(matches, dorkMatches...)
-					mu.Unlock()
+				mu.Lock()
+				if err != nil {
+					skipped = append(skipped, SkippedDork{Pattern: dork.Pattern, Reason: err.Error()})
 				}
+				if wasTruncated {
+					truncated++
+				}
+				matches = append(matches, dorkMatches...)
+				mu.Unlock()
 
-				// Update progress bar
 				if s.bar != nil {
 					s.bar.Add(1)
 				}
 
-				// Rate limiting delay
-				time.Sleep(time.Duration(s.config.Delay) * time.Second)
+				if s.config.Delay > 0 {
+					time.Sleep(time.Duration(s.config.Delay) * time.Second)
+				}
 			}
 		}()
 	}
 
-	// Send jobs to workers
 	for _, dork := range dorkList {
 		jobs <- dork
 	}
 	close(jobs)
 
-	// Wait for completion
 	wg.Wait()
 
 	if s.bar != nil {
@@ -181,148 +194,47 @@ func (s *Scanner) scanConcurrent(dorkList []dorks.Dork) []Match {
 		fmt.Println() // New line after progress bar
 	}
 
-	return matches
+	return matches, skipped, truncated
 }
 
 // searchDork performs a single dork search
-func (s *Scanner) searchDork(dork dorks.Dork) []Match {
-	// Build query
-	targetType := s.config.GetTargetType()
-	target := s.config.GetTarget()
-	query := fmt.Sprintf("%s:%s %s", targetType, target, dork.Pattern)
+func (s *Scanner) searchDork(ctx context.Context, dork dorks.Dork) ([]Match, bool, error) {
+	s.logger.Debug("Searching %s: %s", s.provider.Name(), dork.Pattern)
 
-	s.logger.Debug("Searching: %s", query)
-
-	// Perform search with retry
-	var response *GitHubSearchResponse
-	var err error
-
-	for retries := 0; retries < 3; retries++ {
-		response, err = s.performSearch(query)
-		if err == nil {
-			break
-		}
-
-		// Check if it's a rate limit error
-		if err.Error() == "rate_limit" {
-			s.handleRateLimit()
-			continue
-		}
-
-		s.logger.Debug("Search failed (attempt %d/3): %v", retries+1, err)
-		time.Sleep(time.Duration(retries+1) * time.Second)
-	}
-
+	result, err := s.provider.Search(ctx, dork.Pattern)
 	if err != nil {
-		s.logger.Debug("Search failed for dork '%s': %v", dork.Pattern, err)
-		return nil
+		s.logger.Warning("Search failed, dork skipped: %s (%v)", dork.Pattern, err)
+		return nil, false, err
 	}
 
-	// Process results
-	if response.TotalCount == 0 {
+	if len(result.Hits) == 0 {
 		s.logger.NoMatch(dork.Pattern)
-		return nil
+		return nil, false, nil
 	}
 
-	// Convert to matches
-	matches := make([]Match, 0, len(response.Items))
-	urls := make([]string, 0, len(response.Items))
+	matches := make([]Match, 0, len(result.Hits))
+	urls := make([]string, 0, len(result.Hits))
+	now := time.Now()
 
-	for _, item := range response.Items {
-		match := Match{
+	for _, hit := range result.Hits {
+		matches = append(matches, Match{
 			Dork:       dork,
-			URL:        item.HTMLURL,
-			Repository: item.Repository.FullName,
-			Path:       item.Path,
-			Score:      item.Score,
-			Timestamp:  time.Now(),
-		}
-		matches = append(matches, match)
-		urls = append(urls, item.HTMLURL)
+			URL:        hit.URL,
+			Repository: hit.Repository,
+			Path:       hit.Path,
+			Score:      hit.Score,
+			Fragments:  hit.Fragments,
+			Timestamp:  now,
+		})
+		urls = append(urls, hit.URL)
 	}
 
-	// Log the match
 	s.logger.Match(dork.Pattern, len(matches), urls)
-
-	return matches
-}
-
-// performSearch executes the GitHub API search request
-func (s *Scanner) performSearch(query string) (*GitHubSearchResponse, error) {
-	urlStr := fmt.Sprintf("https://api.github.com/search/code?q=%s&per_page=100",
-		url.QueryEscape(query))
-
-	req, err := http.NewRequestWithContext(context.Background(), "GET", urlStr, nil)
-	if err != nil {
-		return nil, err
+	if result.Truncated {
+		s.logger.Warning("More results exist for %s than were fetched; raise --max-pages to see them", dork.Pattern)
 	}
 
-	req.Header.Set("Authorization", "token "+s.config.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	// Check for rate limiting
-	if resp.StatusCode == 403 {
-		body, _ := io.ReadAll(resp.Body)
-		if contains(string(body), "rate limit") {
-			return nil, fmt.Errorf("rate_limit")
-		}
-		return nil, fmt.Errorf("API error 403: %s", string(body))
-	}
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
-	}
-
-	var searchResp GitHubSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return nil, err
-	}
-
-	return &searchResp, nil
-}
-
-// handleRateLimit waits until the rate limit is reset
-func (s *Scanner) handleRateLimit() {
-	s.logger.Debug("Rate limit hit, checking reset time...")
-
-	req, _ := http.NewRequest("GET", "https://api.github.com/rate_limit", nil)
-	req.Header.Set("Authorization", "token "+s.config.Token)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		s.logger.Warning("Could not fetch rate limit info, waiting 60 seconds...")
-		time.Sleep(60 * time.Second)
-		return
-	}
-	defer resp.Body.Close()
-
-	var data struct {
-		Resources struct {
-			Search struct {
-				Reset int64 `json:"reset"`
-			} `json:"search"`
-		} `json:"resources"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		s.logger.Warning("Could not parse rate limit info, waiting 60 seconds...")
-		time.Sleep(60 * time.Second)
-		return
-	}
-
-	resetTime := time.Unix(data.Resources.Search.Reset, 0)
-	waitDuration := time.Until(resetTime) + 5*time.Second
-
-	s.logger.RateLimit(resetTime, waitDuration)
-	time.Sleep(waitDuration)
+	return matches, result.Truncated, nil
 }
 
 // buildResults creates the final results structure
@@ -359,21 +271,7 @@ func (s *Scanner) buildResults(matches []Match, dorkList []dorks.Dork, startTime
 		LowPriority:    lowCount,
 		Duration:       time.Since(startTime).Round(time.Second).String(),
 		Target:         s.config.GetTarget(),
+		Platform:       s.provider.Name(),
 		ScanDate:       time.Now(),
 	}
-}
-
-// contains checks if a string contains a substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && indexOf(s, substr) >= 0
-}
-
-// indexOf finds the index of a substring
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

@@ -108,7 +108,42 @@ func (h *Handler) displayMatches(matches []scanner.Match) {
 		fmt.Printf("%s %s\n",
 			color.BlueString("URL:"),
 			match.URL)
+		for _, line := range snippetLines(match.Fragments) {
+			fmt.Printf("    %s %s\n", color.HiBlackString("│"), line)
+		}
 	}
+}
+
+// Snippets are cut down so a minified file can't flood the report
+const (
+	maxSnippetLines = 3
+	maxSnippetWidth = 160
+)
+
+// snippetLines returns the first non-empty matched lines, trimmed for display
+func snippetLines(fragments []string) []string {
+	var lines []string
+	for _, f := range fragments {
+		for _, line := range strings.Split(f, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if r := []rune(line); len(r) > maxSnippetWidth {
+				line = string(r[:maxSnippetWidth]) + "…"
+			}
+			lines = append(lines, line)
+			if len(lines) == maxSnippetLines {
+				return lines
+			}
+		}
+	}
+	return lines
+}
+
+// snippet joins snippetLines for single-field formats
+func snippet(fragments []string) string {
+	return strings.Join(snippetLines(fragments), "\n")
 }
 
 // writeJSON exports results to JSON
@@ -124,6 +159,7 @@ func (h *Handler) writeJSON(results *scanner.ScanResults) error {
 
 	output := map[string]interface{}{
 		"scan_info": map[string]interface{}{
+			"platform":    results.Platform,
 			"target":      results.Target,
 			"scan_date":   results.ScanDate,
 			"duration":    results.Duration,
@@ -135,8 +171,11 @@ func (h *Handler) writeJSON(results *scanner.ScanResults) error {
 			"high_priority":   results.HighPriority,
 			"medium_priority": results.MediumPriority,
 			"low_priority":    results.LowPriority,
+			"truncated_dorks": results.Truncated,
+			"skipped_dorks":   len(results.Skipped),
 		},
 		"findings": results.Matches,
+		"skipped":  results.Skipped,
 	}
 
 	if err := encoder.Encode(output); err != nil {
@@ -167,6 +206,7 @@ func (h *Handler) writeCSV(results *scanner.ScanResults) error {
 		"Repository",
 		"File Path",
 		"URL",
+		"Snippet",
 		"Score",
 		"Timestamp",
 	}
@@ -184,6 +224,7 @@ func (h *Handler) writeCSV(results *scanner.ScanResults) error {
 			match.Repository,
 			match.Path,
 			match.URL,
+			snippet(match.Fragments),
 			fmt.Sprintf("%.2f", match.Score),
 			match.Timestamp.Format("2006-01-02 15:04:05"),
 		}
@@ -220,6 +261,7 @@ func (h *Handler) writeHTML(results *scanner.ScanResults) error {
 		"priorityBadge": func(priority string) string {
 			return strings.ToUpper(priority)
 		},
+		"snippet": snippet,
 	}).Parse(htmlTemplate))
 
 	if err := tmpl.Execute(file, results); err != nil {
@@ -361,6 +403,34 @@ const htmlTemplate = `<!DOCTYPE html>
             font-size: 0.85em;
             color: #495057;
         }
+        .snippet {
+            margin-top: 12px;
+            padding: 10px 12px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            color: #333;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .skipped {
+            background: white;
+            border-left: 5px solid #dc3545;
+            border-radius: 12px;
+            padding: 20px 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        .skipped h2 {
+            color: #dc3545;
+            margin-bottom: 10px;
+        }
+        .skipped li {
+            margin: 6px 0 0 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
         .footer {
             text-align: center;
             color: white;
@@ -373,7 +443,7 @@ const htmlTemplate = `<!DOCTYPE html>
     <div class="container">
         <div class="header">
             <h1>🔍 Dighub Scan Report</h1>
-            <div class="subtitle">Target: {{.Target}} • Scan Date: {{.ScanDate.Format "2006-01-02 15:04:05"}} • Duration: {{.Duration}}</div>
+            <div class="subtitle">Platform: {{.Platform}} • Target: {{.Target}} • Scan Date: {{.ScanDate.Format "2006-01-02 15:04:05"}} • Duration: {{.Duration}}</div>
         </div>
 
         <div class="stats">
@@ -403,6 +473,17 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
         </div>
 
+        {{if .Skipped}}
+        <div class="skipped">
+            <h2>{{len .Skipped}} dorks were skipped</h2>
+            <p>These searches failed, so their results are unknown. Re-run the scan to cover them.</p>
+            <ul>
+            {{range .Skipped}}<li>{{.Pattern}} — {{.Reason}}</li>
+            {{end}}
+            </ul>
+        </div>
+        {{end}}
+
         <div class="findings">
             <h2>Detailed Findings</h2>
             {{range .Matches}}
@@ -429,12 +510,13 @@ const htmlTemplate = `<!DOCTYPE html>
                     <span class="detail-label">URL:</span>
                     <span class="detail-value"><a href="{{.URL}}" target="_blank">{{.URL}}</a></span>
                 </div>
+                {{with snippet .Fragments}}<div class="snippet">{{.}}</div>{{end}}
             </div>
             {{end}}
         </div>
 
         <div class="footer">
-            <p>Generated by Dighub - Advanced GitHub Dorking & Secret Hunting Tool</p>
+            <p>Generated by Dighub - Advanced GitHub & GitLab Dorking & Secret Hunting Tool</p>
             <p>⚠️ This tool is for authorized security research only</p>
         </div>
     </div>

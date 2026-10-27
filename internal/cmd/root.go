@@ -19,10 +19,10 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "dighub",
-	Short: "Advanced GitHub Dorking & Secret Hunting Tool",
-	Long: `Dighub is a powerful CLI tool that performs advanced GitHub dorking 
-to detect exposed secrets, credentials, webhooks and sensitive files 
-inside public repositories.`,
+	Short: "Advanced GitHub & GitLab Dorking & Secret Hunting Tool",
+	Long: `Dighub is a powerful CLI tool that performs advanced code search dorking
+on GitHub and GitLab (including self-hosted instances) to detect exposed
+secrets, credentials, webhooks and sensitive files inside repositories.`,
 	Version: version,
 	RunE:    run,
 }
@@ -30,9 +30,11 @@ inside public repositories.`,
 func init() {
 	cfg = &config.Config{}
 
-	rootCmd.Flags().StringVarP(&cfg.Organization, "org", "o", "", "GitHub organization to scan (required)")
-	rootCmd.Flags().StringVarP(&cfg.Token, "token", "t", "", "GitHub Personal Access Token (required)")
-	rootCmd.Flags().StringVarP(&cfg.User, "user", "u", "", "GitHub user to scan (alternative to org)")
+	rootCmd.Flags().StringVarP(&cfg.Platform, "platform", "P", "github", "Platform to search: github, gitlab")
+	rootCmd.Flags().StringVar(&cfg.BaseURL, "url", "", "Instance URL for self-hosted GitLab or GitHub Enterprise")
+	rootCmd.Flags().StringVarP(&cfg.Organization, "org", "o", "", "Organization (GitHub) or group (GitLab) to scan")
+	rootCmd.Flags().StringVarP(&cfg.Token, "token", "t", "", "Personal access token for the platform (required)")
+	rootCmd.Flags().StringVarP(&cfg.User, "user", "u", "", "User to scan (alternative to org)")
 
 	rootCmd.Flags().StringVarP(&cfg.OutputFormat, "output", "f", "terminal", "Output format: terminal, json, csv, html")
 	rootCmd.Flags().StringVarP(&cfg.OutputFile, "out-file", "w", "", "Output file path (default: ./dighub-results.[format])")
@@ -42,8 +44,9 @@ func init() {
 	rootCmd.Flags().StringVarP(&cfg.Priority, "priority", "p", "all", "Priority level: all, high, medium, low")
 
 	rootCmd.Flags().IntVarP(&cfg.Workers, "workers", "W", 5, "Number of concurrent workers")
-	rootCmd.Flags().IntVarP(&cfg.RateLimit, "rate-limit", "r", 30, "Requests per minute")
-	rootCmd.Flags().IntVarP(&cfg.Delay, "delay", "d", 2, "Delay between requests (seconds)")
+	rootCmd.Flags().IntVarP(&cfg.RateLimit, "rate-limit", "r", 0, "Requests per minute (0: platform default, GitHub 10, GitLab 30)")
+	rootCmd.Flags().IntVarP(&cfg.Delay, "delay", "d", 0, "Extra delay per worker after each dork (seconds)")
+	rootCmd.Flags().IntVarP(&cfg.MaxPages, "max-pages", "m", 1, "Result pages to fetch per dork, 100 results each (1-10)")
 
 	rootCmd.Flags().BoolVarP(&cfg.Verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.Flags().BoolVarP(&cfg.Quiet, "quiet", "q", false, "Quiet mode (only show matches)")
@@ -86,6 +89,7 @@ func run(cmd *cobra.Command, args []string) error {
 	if target == "" {
 		target = cfg.User
 	}
+	log.Info("Platform: %s", cfg.Platform)
 	log.Info("Target: %s", target)
 	log.Info("Workers: %d", cfg.Workers)
 	log.Info("Output format: %s", cfg.OutputFormat)
@@ -119,7 +123,7 @@ func printBanner(ver string) {
 `
 	fmt.Println(color.CyanString(banner))
 	fmt.Printf("%s %s\n", color.YellowString("Version:"), ver)
-	fmt.Printf("%s Advanced GitHub Dorking & Secret Hunting Tool\n", color.GreenString("=>"))
+	fmt.Printf("%s Advanced GitHub & GitLab Dorking & Secret Hunting Tool\n", color.GreenString("=>"))
 	fmt.Println(strings.Repeat("─", 50))
 }
 
@@ -136,14 +140,29 @@ func printSummary(results *scanner.ScanResults, log *logger.Logger) {
 	fmt.Printf("%s %d\n", color.MagentaString("Medium Priority:"), results.MediumPriority)
 	fmt.Printf("%s %d\n", color.CyanString("Low Priority:"), results.LowPriority)
 	fmt.Printf("%s %s\n", color.BlueString("Duration:"), results.Duration)
+	if results.Truncated > 0 {
+		fmt.Printf("%s %d (raise --max-pages)\n", color.YellowString("Truncated Dorks:"), results.Truncated)
+	}
+	if len(results.Skipped) > 0 {
+		fmt.Printf("%s %d\n", color.RedString("Skipped Dorks:"), len(results.Skipped))
+	}
 
 	fmt.Println(strings.Repeat("═", 50))
+
+	if len(results.Skipped) > 0 {
+		log.Warning("%d dorks could not be searched, so their results are unknown:", len(results.Skipped))
+		for _, sk := range results.Skipped {
+			log.Warning("  %s: %s", sk.Pattern, sk.Reason)
+		}
+	}
 
 	if results.TotalMatches > 0 {
 		log.Success("✓ Scan completed successfully!")
 		if results.OutputFile != "" {
 			log.Success("Results saved to: %s", results.OutputFile)
 		}
+	} else if len(results.Skipped) > 0 {
+		log.Warning("No matches in the dorks that ran, but the skipped ones were not checked.")
 	} else {
 		log.Info("No sensitive data found in the target.")
 	}

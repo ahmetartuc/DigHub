@@ -97,30 +97,34 @@ dighub -org mycompany \
 
 ## Performance Optimization
 
-### Fast Scan with 10 Concurrent Workers
+DigHub paces requests itself, shared across all workers, so scans stay under the
+platform's rate limit without tuning. GitHub's code search API allows 10 requests
+per minute, so a full scan of all dorks takes roughly 15 minutes no matter how many
+workers you use. If a rate limit is still hit, DigHub waits for the reset and retries.
+
+### Narrow the Scan
+
+Fewer dorks is the main way to scan faster:
 
 ```bash
-dighub -org mycompany -token ghp_xxx -workers 10
+dighub -org mycompany -token ghp_xxx -priority high -include "AWS,GitHub,SSH"
 ```
 
-### Maximum Speed (Use with Caution)
+### Fetch More Results per Dork
+
+Each dork returns up to 100 results by default. When a dork has more, DigHub
+warns and counts it under "Truncated Dorks". Fetch up to 1000:
 
 ```bash
-dighub -org mycompany \
-  -token ghp_xxx \
-  -workers 15 \
-  -delay 1 \
-  -rate-limit 50
+dighub -org mycompany -token ghp_xxx -max-pages 10
 ```
 
-### Conservative Scan (Avoid Rate Limits)
+### Self-Hosted Instances
+
+Self-hosted GitLab often has looser limits. Raise the request rate to match:
 
 ```bash
-dighub -org mycompany \
-  -token ghp_xxx \
-  -workers 3 \
-  -delay 3 \
-  -rate-limit 20
+dighub -platform gitlab -url https://gitlab.example.com -org platform -token glpat-xxx -rate-limit 120
 ```
 
 ## Advanced Use Cases
@@ -130,7 +134,6 @@ dighub -org mycompany \
 ```bash
 dighub -org mycompany \
   -token ghp_xxx \
-  -workers 8 \
   -output html \
   -out-file security-audit-$(date +%Y%m%d).html \
   -verbose
@@ -396,10 +399,15 @@ curl -H "Authorization: token ghp_xxx" https://api.github.com/rate_limit
 
 ### Rate Limit Issues
 
+DigHub waits out rate limits on its own. If you share the token with other tools,
+lower DigHub's request rate so they don't compete:
+
 ```bash
-# Reduce workers and increase delay
-dighub -org mycompany -token ghp_xxx -workers 2 -delay 5
+dighub -org mycompany -token ghp_xxx -rate-limit 5
 ```
+
+Dorks that still fail are listed at the end of the scan as "Skipped Dorks"
+(and under `skipped` in JSON output). Re-run the scan to cover them.
 
 ### Token Permission Issues
 
