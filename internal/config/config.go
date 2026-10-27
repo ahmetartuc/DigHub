@@ -3,9 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 )
 
 type Config struct {
+	Platform     string
+	BaseURL      string
 	Organization string
 	User         string
 	Token        string
@@ -20,6 +23,7 @@ type Config struct {
 	Workers   int
 	RateLimit int
 	Delay     int
+	MaxPages  int
 
 	Verbose      bool
 	Quiet        bool
@@ -29,6 +33,17 @@ type Config struct {
 }
 
 func (c *Config) Validate() error {
+	if c.Platform != "github" && c.Platform != "gitlab" {
+		return fmt.Errorf("invalid platform: %s (valid: github, gitlab)", c.Platform)
+	}
+
+	if c.BaseURL != "" {
+		u, err := url.Parse(c.BaseURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return fmt.Errorf("invalid --url: %s (expected e.g. https://gitlab.example.com)", c.BaseURL)
+		}
+	}
+
 	if c.Organization == "" && c.User == "" {
 		return errors.New("either --org or --user must be provided")
 	}
@@ -65,8 +80,12 @@ func (c *Config) Validate() error {
 		return errors.New("workers must be between 1 and 20")
 	}
 
-	if c.RateLimit < 1 || c.RateLimit > 60 {
-		return errors.New("rate-limit must be between 1 and 60")
+	if c.RateLimit < 0 || c.RateLimit > 600 {
+		return errors.New("rate-limit must be between 0 (platform default) and 600")
+	}
+
+	if c.MaxPages < 1 || c.MaxPages > 10 {
+		return errors.New("max-pages must be between 1 and 10")
 	}
 
 	if c.Delay < 0 || c.Delay > 10 {
@@ -87,6 +106,7 @@ func (c *Config) GetTarget() string {
 	return c.User
 }
 
+// GetTargetType returns "org" or "user". On GitLab an org is a group.
 func (c *Config) GetTargetType() string {
 	if c.Organization != "" {
 		return "org"
